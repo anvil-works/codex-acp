@@ -63,10 +63,10 @@ url = "https://example.com/mcp"
             env: [{name: "example", value: "example"}],
         };
 
-        const newSessionResponse = await codexAcpAgent.newSession({
-            cwd: "",
-            mcpServers: [conflictingMcp],
-        });
+        const newSessionResponse = await codexAcpAgent.newSession(
+            {cwd: "", mcpServers: [conflictingMcp]},
+            0,
+        );
         fixture.clearAcpConnectionDump();
 
         await codexAcpAgent.prompt({
@@ -91,10 +91,12 @@ url = "https://example.com/mcp"
             env: [{name: "example", value: "example"}],
         };
 
-        await expect(codexAcpAgent.newSession({
-            cwd: projectPath,
-            mcpServers: [conflictingMcp],
-        })).resolves.toBeDefined();
+        await expect(
+            codexAcpAgent.newSession(
+                {cwd: projectPath, mcpServers: [conflictingMcp]},
+                0,
+            ),
+        ).resolves.toBeDefined();
     });
 
     it('should not filter the conflicting ACP MCP when config filtering is disabled', async () => {
@@ -111,10 +113,12 @@ url = "https://example.com/mcp"
             env: [{name: "example", value: "example"}],
         };
 
-        await expect(codexAcpAgent.newSession({
-            cwd: "",
-            mcpServers: [conflictingMcp],
-        })).rejects.toMatchObject({
+        await expect(
+            codexAcpAgent.newSession(
+                {cwd: "", mcpServers: [conflictingMcp]},
+                0,
+            ),
+        ).rejects.toMatchObject({
             data: expect.stringContaining("url is not supported for stdio"),
         });
     });

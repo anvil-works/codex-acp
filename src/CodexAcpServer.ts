@@ -290,7 +290,7 @@ export class CodexAcpServer {
         }
     }
 
-    async checkAuthorization(){
+    async checkAuthorization(requestId: acp.JsonRpcId){
         const authNeeded = await this.runWithProcessCheck(() => this.codexAcpClient.authRequired());
         logger.log("Auth requirement checked", {authRequired: authNeeded});
         if (authNeeded) {
@@ -298,7 +298,7 @@ export class CodexAcpServer {
                 logger.log("Authenticating with default auth request...", {
                     authRequest: this.defaultAuthRequest
                 });
-                await this.authenticate(this.defaultAuthRequest)
+                await this.authenticate(this.defaultAuthRequest, requestId);
                 logger.log("Authentication completed");
             } else {
                 logger.log("Authentication required but no default auth request provided, return to IDE");
@@ -307,9 +307,12 @@ export class CodexAcpServer {
         }
     }
 
-    async getOrCreateSession(request: acp.NewSessionRequest | acp.ResumeSessionRequest): Promise<[SessionId, LegacySessionModelState, SessionModeState]> {
+    async getOrCreateSession(
+        request: acp.NewSessionRequest | acp.ResumeSessionRequest,
+        requestId: acp.JsonRpcId,
+    ): Promise<[SessionId, LegacySessionModelState, SessionModeState]> {
         try {
-            return await this.tryCreateSession(request);
+            return await this.tryCreateSession(request, requestId);
         } catch (e) {
             const error = e instanceof Error ? e : new Error(String(e));
             await this.handleError(error);
@@ -392,11 +395,14 @@ export class CodexAcpServer {
         return generation;
     }
 
-    async tryCreateSession(request: acp.NewSessionRequest | acp.ResumeSessionRequest): Promise<[SessionId, LegacySessionModelState, SessionModeState]> {
+    async tryCreateSession(
+        request: acp.NewSessionRequest | acp.ResumeSessionRequest,
+        requestId: acp.JsonRpcId,
+    ): Promise<[SessionId, LegacySessionModelState, SessionModeState]> {
         const requestedSessionGeneration = "sessionId" in request
             ? this.beginSessionOpen(request.sessionId)
             : null;
-        await this.checkAuthorization();
+        await this.checkAuthorization(requestId);
         const requestedMcpServers = request.mcpServers ?? [];
         const mcpServerStartupVersion = requestedMcpServers.length > 0
             ? this.codexAcpClient.getMcpServerStartupVersion()
@@ -521,14 +527,17 @@ export class CodexAcpServer {
         return null;
     }
 
-    async loadSession(params: acp.LoadSessionRequest): Promise<LegacyLoadSessionResponse> {
+    async loadSession(
+        params: acp.LoadSessionRequest,
+        requestId: acp.JsonRpcId,
+    ): Promise<LegacyLoadSessionResponse> {
         logger.log("Loading session...", {sessionId: params.sessionId});
         const {
             sessionId,
             modelState,
             modeState,
             thread,
-        } = await this.getOrCreateSessionWithHistory(params);
+        } = await this.getOrCreateSessionWithHistory(params, requestId);
 
         await this.streamThreadHistory(sessionId, thread);
 
@@ -544,9 +553,12 @@ export class CodexAcpServer {
         };
     }
 
-    async resumeSession(params: acp.ResumeSessionRequest): Promise<LegacyResumeSessionResponse> {
+    async resumeSession(
+        params: acp.ResumeSessionRequest,
+        requestId: acp.JsonRpcId,
+    ): Promise<LegacyResumeSessionResponse> {
         logger.log("Resuming session...", {sessionId: params.sessionId});
-        const [sessionId, modelState, modeState] = await this.getOrCreateSession(params);
+        const [sessionId, modelState, modeState] = await this.getOrCreateSession(params, requestId);
 
         logger.log("Session resumed", {
             sessionId: sessionId,
@@ -560,9 +572,9 @@ export class CodexAcpServer {
         };
     }
 
-    async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
+    async listSessions(params: acp.ListSessionsRequest, requestId: acp.JsonRpcId): Promise<acp.ListSessionsResponse> {
         logger.log("Listing sessions...", {cwd: params.cwd, cursor: params.cursor});
-        await this.checkAuthorization();
+        await this.checkAuthorization(requestId);
         const response = await this.runWithProcessCheck(() => this.codexAcpClient.listSessions(params));
         return {
             ...response,
@@ -651,9 +663,10 @@ export class CodexAcpServer {
 
     async newSession(
         params: acp.NewSessionRequest,
+        requestId: acp.JsonRpcId,
     ): Promise<LegacyNewSessionResponse> {
         logger.log("Starting new session...");
-        const [sessionId, modelState, modeState] = await this.getOrCreateSession(params);
+        const [sessionId, modelState, modeState] = await this.getOrCreateSession(params, requestId);
 
         logger.log("New session created", {
             sessionId: sessionId,
@@ -671,9 +684,10 @@ export class CodexAcpServer {
 
     async authenticate(
         _params: acp.AuthenticateRequest,
+        requestId: acp.JsonRpcId,
     ): Promise<acp.AuthenticateResponse> {
         logger.log("Authenticate request received");
-        const isAuthenticated = await this.runWithProcessCheck(() => this.codexAcpClient.authenticate(this.connection, _params));
+        const isAuthenticated = await this.runWithProcessCheck(() => this.codexAcpClient.authenticate(this.connection, _params, requestId));
         if (!isAuthenticated) {
             logger.log("Authenticate request failed");
             throw RequestError.invalidParams();
@@ -1236,7 +1250,8 @@ export class CodexAcpServer {
     }
 
     private async getOrCreateSessionWithHistory(
-        request: acp.LoadSessionRequest
+        request: acp.LoadSessionRequest,
+        requestId: acp.JsonRpcId,
     ): Promise<{
         sessionId: SessionId;
         modelState: LegacySessionModelState;
@@ -1244,7 +1259,7 @@ export class CodexAcpServer {
         thread: Thread;
     }> {
         const requestedSessionGeneration = this.beginSessionOpen(request.sessionId);
-        await this.checkAuthorization();
+        await this.checkAuthorization(requestId);
         const requestedMcpServers = request.mcpServers ?? [];
         const mcpServerStartupVersion = requestedMcpServers.length > 0
             ? this.codexAcpClient.getMcpServerStartupVersion()
