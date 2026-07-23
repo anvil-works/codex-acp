@@ -83,6 +83,7 @@ import {
     createCodexMessagePhaseMeta,
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
+    createPlanTextUpdate,
     createUserMessageChunk,
 } from "./ContentChunks";
 import {
@@ -1538,11 +1539,7 @@ export class CodexAcpServer {
     private createPlanMessageUpdate(
         item: ThreadItem & { type: "plan" }
     ): UpdateSessionEvent {
-        return createAgentTextMessageChunk(
-            item.text,
-            item.id,
-            createCodexMessagePhaseMeta("final_answer"),
-        );
+        return createPlanTextUpdate(item.text, item.id, this.clientCapabilities);
     }
 
     private userInputToContentBlocks(input: UserInput): acp.ContentBlock[] {
@@ -1891,7 +1888,11 @@ export class CodexAcpServer {
         const disposePromptRequestCancellation = this.observePromptRequestCancellation(signal, sessionState, activePrompt);
 
         try {
-            const eventHandler = new CodexEventHandler(this.connection, sessionState);
+            const eventHandler = new CodexEventHandler(
+                this.connection,
+                sessionState,
+                this.clientCapabilities,
+            );
             const approvalHandler = new CodexApprovalHandler(this.connection, sessionState, activePrompt.signal);
             const elicitationHandler = new CodexElicitationHandler(
                 this.connection,
