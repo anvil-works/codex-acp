@@ -1358,14 +1358,32 @@ export class CodexEventHandler {
         if (!this.sessionState.rateLimits) {
             this.sessionState.rateLimits = new Map();
         }
-        const limitId = params.rateLimits.limitId ?? "codex";
-        const existingEntry = this.sessionState.rateLimits.get(limitId);
-        const snapshot = existingEntry
-            ? mergeRateLimitSnapshot(existingEntry.snapshot, params.rateLimits)
-            : {...params.rateLimits, limitId};
+
+        const update = params.rateLimits;
+        let previousKey = update.limitId !== null && this.sessionState.rateLimits.has(update.limitId)
+            ? update.limitId
+            : undefined;
+        if (previousKey === undefined && update.limitName !== null) {
+            previousKey = Array.from(this.sessionState.rateLimits.entries())
+                .find(([, entry]) => entry.limitName === update.limitName)?.[0];
+        }
+        if (previousKey === undefined && update.limitId === null && update.limitName === null) {
+            previousKey = this.sessionState.rateLimits.has("unknown") ? "unknown" : undefined;
+        }
+
+        const previous = previousKey === undefined
+            ? undefined
+            : this.sessionState.rateLimits.get(previousKey);
+        const snapshot = previous
+            ? mergeRateLimitSnapshot(previous.snapshot, update)
+            : update;
+        const limitId = snapshot.limitId ?? previous?.limitId ?? snapshot.limitName ?? "unknown";
+        if (previousKey !== undefined && previousKey !== limitId) {
+            this.sessionState.rateLimits.delete(previousKey);
+        }
         this.sessionState.rateLimits.set(limitId, {
-            limitId: limitId,
-            limitName: snapshot.limitName ?? existingEntry?.limitName ?? limitId,
+            limitId,
+            limitName: snapshot.limitName ?? previous?.limitName ?? limitId,
             snapshot,
         });
     }
