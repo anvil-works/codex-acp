@@ -75,7 +75,7 @@ describe('Token Usage Events', () => {
                     totalTokens: 2500,
                     inputTokens: 2000,
                     cachedInputTokens: 500,
-                    cacheWriteInputTokens: 0,
+                    cacheWriteInputTokens: 300,
                     outputTokens: 450,
                     reasoningOutputTokens: 50,
                 },
