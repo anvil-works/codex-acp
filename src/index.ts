@@ -16,6 +16,11 @@ import {
     GOAL_CONTROL_METHOD, LEGACY_SET_SESSION_MODEL_METHOD,
     SESSION_STEERING_METHOD,
 } from "./AcpExtensions";
+import {
+    configurePromptCacheProxy,
+    resolvePromptCacheUpstream,
+    startPromptCacheProxy,
+} from "./PromptCacheProxy";
 
 const emptyExtensionParamsParser = z.preprocess(
     (params) => params ?? {},
@@ -66,17 +71,31 @@ if (process.argv[2] === "login") {
             process.exit(1);
         });
 } else {
-    startAcpServer();
+    startAcpServer().catch(error => {
+        console.error("Codex ACP startup error:", error.message);
+        process.exit(1);
+    });
 }
 
-function startAcpServer() {
+async function startAcpServer() {
     const codexPath = process.env["CODEX_PATH"];
     const configString = process.env["CODEX_CONFIG"];
     const authRequestString = process.env["DEFAULT_AUTH_REQUEST"];
-    const modelProvider = process.env["MODEL_PROVIDER"];
-    const config = configString ? JSON.parse(configString) : undefined;
+    let modelProvider = process.env["MODEL_PROVIDER"];
+    let config = configString ? JSON.parse(configString) : undefined;
     const parsedAuthRequest = authRequestString ? JSON.parse(authRequestString) : undefined;
     const defaultAuthRequest = parsedAuthRequest && isCodexAuthRequest(parsedAuthRequest) ? parsedAuthRequest : undefined;
+    const promptCacheKey = process.env["ANVIL_PROMPT_CACHE_KEY"];
+    const promptCacheUpstream = process.env["ANVIL_PROMPT_CACHE_UPSTREAM"]
+        ?? resolvePromptCacheUpstream(config, modelProvider, process.env);
+    const promptCacheProxy = promptCacheKey && promptCacheUpstream
+        ? await startPromptCacheProxy(promptCacheKey, promptCacheUpstream)
+        : undefined;
+    if (promptCacheProxy) {
+        const proxyConfig = configurePromptCacheProxy(config, promptCacheProxy.baseUrl);
+        config = proxyConfig.config;
+        modelProvider = proxyConfig.modelProvider;
+    }
 
     logger.log("Startup", {
         name: packageJson.name,
@@ -86,6 +105,8 @@ function startAcpServer() {
         codexConfig: config ?? null,
         authRequest: authRequestString ?? null,
         defaultAuthRequest: defaultAuthRequest ?? null,
+        promptCacheKey: promptCacheKey ?? null,
+        promptCacheProxy: promptCacheProxy?.baseUrl ?? null,
     });
 
     const codexProcessState: CodexProcessState = {
@@ -97,6 +118,7 @@ function startAcpServer() {
     };
 
     process.stdin.on("close", () => {
+        void promptCacheProxy?.close();
         codexProcessState.connection.process.stdin.end();
         // Kill the codex process if it doesn't exit naturally
         setTimeout(() => {

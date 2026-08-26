@@ -8,6 +8,7 @@ import type {TokenUsageBreakdown} from "./app-server/v2";
  * [totalTokens]: total number of tokens used (the sum of all other fields)
  * [inputTokens]: number of non-cached input tokens
  * [cachedInputTokens]: number of cached input tokens
+ * [cacheWriteInputTokens]: number of cache-write input tokens
  * [outputTokens]: number of output tokens (including reasoning output tokens)
  * [reasoningOutputTokens]: number of reasoning output tokens
  */
@@ -15,6 +16,7 @@ export interface TokenCount {
     totalTokens: number;
     inputTokens: number;
     cachedInputTokens: number;
+    cacheWriteInputTokens: number;
     outputTokens: number;
     reasoningOutputTokens: number;
 }
@@ -28,8 +30,9 @@ export function toTokenCount(usage: TokenUsageBreakdown): TokenCount {
 
     return {
         totalTokens: usage.totalTokens,
-        inputTokens: usage.inputTokens - usage.cachedInputTokens,
+        inputTokens: usage.inputTokens - usage.cachedInputTokens - usage.cacheWriteInputTokens,
         cachedInputTokens: usage.cachedInputTokens,
+        cacheWriteInputTokens: usage.cacheWriteInputTokens,
         outputTokens: usage.outputTokens,
         reasoningOutputTokens: usage.reasoningOutputTokens,
     };
@@ -45,6 +48,7 @@ export function toPromptUsage(tokenCount: TokenCount): Usage {
         totalTokens: tokenCount.totalTokens,
         inputTokens: tokenCount.inputTokens,
         cachedReadTokens: tokenCount.cachedInputTokens,
+        cachedWriteTokens: tokenCount.cacheWriteInputTokens,
         outputTokens: tokenCount.outputTokens,
         thoughtTokens: tokenCount.reasoningOutputTokens,
     };
