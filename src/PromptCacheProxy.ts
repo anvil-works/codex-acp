@@ -120,7 +120,7 @@ async function forwardRequest(
     try {
         const requestBody = await readBody(request);
         const target = targetUrl(upstreamBaseUrl, request.url ?? "/");
-        const body = rewritePromptCacheKey(requestBody, request.headers["content-type"], target.pathname, promptCacheKey);
+        const body = rewritePromptCacheRequest(requestBody, request.headers["content-type"], target.pathname, promptCacheKey);
         const headers = forwardedHeaders(request.headers);
         headers.host = target.host;
         headers["content-length"] = String(body.byteLength);
@@ -158,7 +158,7 @@ function targetUrl(upstreamBaseUrl: URL, requestUrl: string): URL {
     return target;
 }
 
-function rewritePromptCacheKey(
+function rewritePromptCacheRequest(
     body: Buffer,
     contentType: string | undefined,
     pathname: string,
@@ -172,7 +172,40 @@ function rewritePromptCacheKey(
         throw new Error("Responses request body must be a JSON object");
     }
     parsed["prompt_cache_key"] = promptCacheKey;
+    if (addStableContextBreakpoint(parsed["input"])) {
+        const options = isRecord(parsed["prompt_cache_options"])
+            ? parsed["prompt_cache_options"]
+            : {};
+        parsed["prompt_cache_options"] = {...options, mode: "explicit"};
+    }
     return Buffer.from(JSON.stringify(parsed));
+}
+
+function addStableContextBreakpoint(input: unknown): boolean {
+    if (!Array.isArray(input)) {
+        return false;
+    }
+
+    let previousTextBlock: Record<string, unknown> | undefined;
+    for (const item of input) {
+        if (!isRecord(item) || !Array.isArray(item["content"])) {
+            continue;
+        }
+        for (const block of item["content"]) {
+            if (!isRecord(block) || block["type"] !== "input_text" || typeof block["text"] !== "string") {
+                continue;
+            }
+            if (block["text"].trimStart().startsWith("<environment_context>")) {
+                if (!previousTextBlock) {
+                    return false;
+                }
+                previousTextBlock["prompt_cache_breakpoint"] = {type: "default"};
+                return true;
+            }
+            previousTextBlock = block;
+        }
+    }
+    return false;
 }
 
 function readBody(request: http.IncomingMessage): Promise<Buffer> {

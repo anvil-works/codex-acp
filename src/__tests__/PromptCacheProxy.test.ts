@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe("PromptCacheProxy", () => {
-    it("replaces per-session Responses cache keys and streams the response", async () => {
+    it("replaces per-session keys and explicitly caches stable context before the environment", async () => {
         let forwardedBody: unknown;
         const upstream = await startServer((request, response) => {
             void readJson(request).then(body => {
@@ -30,7 +30,23 @@ describe("PromptCacheProxy", () => {
         const result = await fetch(`${proxy.baseUrl}/responses`, {
             method: "POST",
             headers: {"content-type": "application/json"},
-            body: JSON.stringify({model: "gpt-5.6", prompt_cache_key: "session-uuid", input: []}),
+            body: JSON.stringify({
+                model: "gpt-5.6",
+                prompt_cache_key: "session-uuid",
+                prompt_cache_options: {retention: "24h"},
+                input: [
+                    {type: "message", role: "developer", content: [
+                        {type: "input_text", text: "<skills_instructions>stable skills</skills_instructions>"},
+                    ]},
+                    {type: "message", role: "user", content: [
+                        {type: "input_text", text: "# AGENTS.md instructions\nstable repo guidance"},
+                        {type: "input_text", text: "<environment_context>dynamic cwd</environment_context>"},
+                    ]},
+                    {type: "message", role: "user", content: [
+                        {type: "input_text", text: "varying user task"},
+                    ]},
+                ],
+            }),
         });
 
         expect(result.status).toBe(200);
@@ -38,9 +54,44 @@ describe("PromptCacheProxy", () => {
         expect(forwardedBody).toEqual({
             model: "gpt-5.6",
             prompt_cache_key: "anvil-agent:v1",
-            input: [],
+            prompt_cache_options: {retention: "24h", mode: "explicit"},
+            input: [
+                {type: "message", role: "developer", content: [
+                    {type: "input_text", text: "<skills_instructions>stable skills</skills_instructions>"},
+                ]},
+                {type: "message", role: "user", content: [
+                    {
+                        type: "input_text",
+                        text: "# AGENTS.md instructions\nstable repo guidance",
+                        prompt_cache_breakpoint: {type: "default"},
+                    },
+                    {type: "input_text", text: "<environment_context>dynamic cwd</environment_context>"},
+                ]},
+                {type: "message", role: "user", content: [
+                    {type: "input_text", text: "varying user task"},
+                ]},
+            ],
         });
         expect(upstream.requests).toEqual(["/backend-api/codex/responses"]);
+    });
+
+    it("keeps implicit mode when the stable/dynamic boundary is absent", async () => {
+        let forwardedBody: unknown;
+        const upstream = await startServer((request, response) => {
+            void readJson(request).then(body => {
+                forwardedBody = body;
+                response.end("ok");
+            });
+        });
+        const proxy = await startProxy("anvil-agent:v1", upstream.baseUrl);
+
+        await fetch(`${proxy.baseUrl}/responses`, {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({prompt_cache_key: "session-uuid", input: []}),
+        });
+
+        expect(forwardedBody).toEqual({prompt_cache_key: "anvil-agent:v1", input: []});
     });
 
     it("does not rewrite unrelated JSON requests", async () => {
