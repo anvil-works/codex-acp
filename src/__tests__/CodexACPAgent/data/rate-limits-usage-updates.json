@@ -23,7 +23,8 @@
                 "individualLimit": null,
                 "spendControlReached": null,
                 "planType": null,
-                "rateLimitReachedType": null
+                "rateLimitReachedType": null,
+                "normalModelSlug": null
               }
             ]
           }
@@ -55,7 +56,8 @@
                 "individualLimit": null,
                 "spendControlReached": null,
                 "planType": null,
-                "rateLimitReachedType": null
+                "rateLimitReachedType": null,
+                "normalModelSlug": null
               },
               {
                 "limitId": "fast-limit",
@@ -70,7 +72,8 @@
                 "individualLimit": null,
                 "spendControlReached": null,
                 "planType": null,
-                "rateLimitReachedType": null
+                "rateLimitReachedType": null,
+                "normalModelSlug": null
               }
             ]
           }
