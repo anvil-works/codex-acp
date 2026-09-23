@@ -29,6 +29,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-123',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'ls -la',
                     cwd: '/test/project',
                     processId: null,
@@ -67,6 +69,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-shell-prefix',
+                    pluginId: null,
+                    scriptPath: null,
                     command,
                     cwd: '/test/project',
                     processId: null,
@@ -125,7 +129,11 @@ describe('CodexEventHandler - terminal output events', () => {
         );
     });
 
-    it('should send formatted output on command completion', async () => {
+    it('should send one delta when command completion has no streamed output', async () => {
+        const deltaSessionState = createTestSessionState({
+            sessionId,
+            terminalOutputDeltaSupported: true,
+        });
         const commandCompletedNotification: ServerNotification = {
             method: 'item/completed',
             params: {
@@ -135,6 +143,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-123',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'ls -la',
                     cwd: '/test/project',
                     processId: 'pid-456',
@@ -148,7 +158,7 @@ describe('CodexEventHandler - terminal output events', () => {
             },
         };
 
-        await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, [commandCompletedNotification]);
+        await setupPromptAndSendNotifications(mockFixture, sessionId, deltaSessionState, [commandCompletedNotification]);
 
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot(
             'data/terminal-command-completed.json'
@@ -165,6 +175,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-456',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'cat nonexistent.txt',
                     cwd: '/test/project',
                     processId: 'pid-789',
@@ -214,6 +226,10 @@ describe('CodexEventHandler - terminal output events', () => {
     });
 
     it('should handle full terminal output flow: start -> delta -> complete', async () => {
+        const deltaSessionState = createTestSessionState({
+            sessionId,
+            terminalOutputDeltaSupported: true,
+        });
         const commandStartNotification: ServerNotification = {
             method: 'item/started',
             params: {
@@ -223,6 +239,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-flow',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'echo hello',
                     cwd: '/test/project',
                     processId: null,
@@ -255,6 +273,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-flow',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'echo hello',
                     cwd: '/test/project',
                     processId: 'pid-123',
@@ -268,7 +288,7 @@ describe('CodexEventHandler - terminal output events', () => {
             },
         };
 
-        await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, [
+        await setupPromptAndSendNotifications(mockFixture, sessionId, deltaSessionState, [
             commandStartNotification,
             outputDeltaNotification,
             commandCompletedNotification
@@ -295,6 +315,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-terminal-output',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'python manage.py migrate',
                     cwd: '/test/project',
                     processId: null,
@@ -335,6 +357,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-terminal-output',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'python manage.py migrate',
                     cwd: '/test/project',
                     processId: 'pid-456',
@@ -376,6 +400,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-terminal-output-completion',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'git status --short',
                     cwd: '/test/project',
                     processId: null,
@@ -397,6 +423,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-terminal-output-completion',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'git status --short',
                     cwd: '/test/project',
                     processId: 'pid-456',
@@ -436,6 +464,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-read-file',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'cat README.md',
                     cwd: '/test/project',
                     processId: null,
@@ -473,6 +503,8 @@ describe('CodexEventHandler - terminal output events', () => {
                 item: {
                     type: 'commandExecution',
                     id: 'command-read-file',
+                    pluginId: null,
+                    scriptPath: null,
                     command: 'cat README.md',
                     cwd: '/test/project',
                     processId: 'pid-456',

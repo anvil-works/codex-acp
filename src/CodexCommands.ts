@@ -4,7 +4,7 @@ import {ACPSessionConnection, type AcpClientConnection} from "./ACPSessionConnec
 import type {CodexAcpClient} from "./CodexAcpClient";
 import type {RateLimitSnapshot, ReviewTarget, SkillsListEntry, SkillsListParams, TurnCompletedNotification} from "./app-server/v2";
 import type {SessionState} from "./CodexAcpServer";
-import type {RateLimitsMap} from "./RateLimitsMap";
+import {createRateLimitsMap, type RateLimitsMap} from "./RateLimitsMap";
 import type {TokenCount} from "./TokenCount";
 import {logger} from "./Logger";
 import {createAgentTextMessageChunk} from "./ContentChunks";
@@ -20,8 +20,13 @@ type ParsedSlashCommand = {
 };
 
 export type CommandHandleResult =
-    | { handled: false }
+    | { handled: false, prompt?: acp.ContentBlock[] }
     | { handled: true, turnCompleted?: TurnCompletedNotification };
+
+export const GOAL_CONTINUATION_PROMPT: acp.ContentBlock[] = [{
+    type: "text",
+    text: "Continue working toward the active goal.",
+}];
 
 export type CommandHandleOptions = {
     onTurnStartPending?: () => void;
@@ -49,11 +54,14 @@ export class CodexCommands {
         this.onLogout = onLogout;
     }
 
-    async publish(sessionState: SessionState): Promise<void> {
+    async publish(sessionState: SessionState, shouldPublish: () => boolean = () => true): Promise<void> {
         try {
+            if (!shouldPublish()) {
+                return;
+            }
             const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills(this.createSkillsListParams(sessionState)));
             const availableCommands = this.buildAvailableCommands(skillsResponse?.data ?? []);
-            if (availableCommands.length === 0) {
+            if (availableCommands.length === 0 || !shouldPublish()) {
                 return;
             }
 
@@ -63,7 +71,9 @@ export class CodexCommands {
                 availableCommands
             });
         } catch (err) {
-            logger.error(`Failed to publish available commands for session ${sessionState.sessionId}`, err);
+            if (shouldPublish()) {
+                logger.error(`Failed to publish available commands for session ${sessionState.sessionId}`, err);
+            }
         }
     }
 
@@ -161,6 +171,11 @@ export class CodexCommands {
                 },
             },
             {
+                name: "rename",
+                description: "Rename the current session.",
+                input: { hint: "new name" }
+            },
+            {
                 name: "logout",
                 description: "Sign out of Codex. This option is available when you are logged in via ChatGPT.",
                 input: null
@@ -211,8 +226,12 @@ export class CodexCommands {
                 return { handled: options.setConfigOption !== undefined };
             }
             case "compact": {
-                await this.runWithProcessCheck(() => this.codexAcpClient.runCompact(sessionId));
-                return { handled: true };
+                options.onTurnStartPending?.();
+                const turnCompleted = await this.runWithProcessCheck(() => this.codexAcpClient.runCompact(
+                    sessionId,
+                    (turnId) => options.onTurnStarted?.(turnId, sessionId),
+                ));
+                return { handled: true, ...(turnCompleted === undefined ? {} : {turnCompleted}) };
             }
             case "goal": {
                 return await this.runGoalCommand(sessionState, command.rest, options);
@@ -246,9 +265,18 @@ export class CodexCommands {
                 return { handled: true, turnCompleted };
             }
             case "status": {
+                await this.refreshRateLimits(sessionState);
                 const session = new ACPSessionConnection(this.connection, sessionId);
                 const message = this.buildStatusMessage(sessionState);
                 await session.update(createAgentTextMessageChunk(message));
+                return { handled: true };
+            }
+            case "rename": {
+                if (command.rest.length === 0) {
+                    await this.sendCommandUsageMessage(commandName, "new name", sessionId);
+                    return { handled: true };
+                }
+                await this.runWithProcessCheck(() => this.codexAcpClient.renameSession(sessionId, command.rest));
                 return { handled: true };
             }
             case "logout": {
@@ -371,7 +399,7 @@ export class CodexCommands {
 
     private createGoalCommandResult(turnCompleted: TurnCompletedNotification | null): CommandHandleResult {
         if (turnCompleted === null) {
-            return { handled: true };
+            return { handled: false, prompt: GOAL_CONTINUATION_PROMPT };
         }
         return {
             handled: true,
@@ -419,6 +447,17 @@ export class CodexCommands {
         return lines.join("  \n");
     }
 
+    private async refreshRateLimits(sessionState: SessionState): Promise<void> {
+        try {
+            const response = await this.runWithProcessCheck(() => this.codexAcpClient.getRateLimits());
+            if (response) {
+                sessionState.rateLimits = createRateLimitsMap(response);
+            }
+        } catch (err) {
+            logger.error(`Failed to refresh rate limits for session ${sessionState.sessionId}`, err);
+        }
+    }
+
     private formatAccountInfo(account: SessionState["account"]): string {
         if (!account) {
             return "not logged in";
@@ -451,10 +490,10 @@ export class CodexCommands {
             return "data not available yet";
         }
         const used = usage.totalTokens;
-        const percentLeft = Math.round(((contextWindow - used) / contextWindow) * 100);
+        const percentUsed = Math.round((used / contextWindow) * 100);
         const usedFormatted = this.formatTokenCount(used);
         const totalFormatted = this.formatTokenCount(contextWindow);
-        return `${percentLeft}% left (${usedFormatted} used / ${totalFormatted})`;
+        return `${percentUsed}% used (${usedFormatted} used / ${totalFormatted})`;
     }
 
     private formatRateLimitLines(rateLimits: RateLimitsMap | null): string[] {
@@ -497,7 +536,33 @@ export class CodexCommands {
             }
         }
 
+        if (rateLimits.individualLimit) {
+            const limit = rateLimits.individualLimit;
+            const used = this.formatCreditAmount(limit.used);
+            const total = this.formatCreditAmount(limit.limit);
+            if (used !== null && total !== null) {
+                const percentLeft = Math.round(Math.min(100, Math.max(0, limit.remainingPercent)));
+                const resetDate = new Date(limit.resetsAt * 1000)
+                    .toLocaleDateString("en-US", {month: "short", day: "numeric"});
+                lines.push(
+                    `**${prefix}individual spend limit:** ${percentLeft}% left (${used} of ${total} credits used; resets ${resetDate})`,
+                );
+            }
+        }
+
         return lines;
+    }
+
+    private formatCreditAmount(raw: string): string | null {
+        const trimmed = raw.trim();
+        if (trimmed.length === 0) {
+            return null;
+        }
+        const value = Number(trimmed);
+        if (!Number.isFinite(value) || value < 0) {
+            return null;
+        }
+        return Math.round(value).toLocaleString("en-US");
     }
 
     private formatWindowLabel(windowDurationMins: number | null): string {

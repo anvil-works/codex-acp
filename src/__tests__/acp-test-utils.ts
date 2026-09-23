@@ -2,9 +2,9 @@ import * as acp from "@agentclientprotocol/sdk";
 import type {CreateElicitationResponse, McpServerStdio, RequestPermissionResponse} from "@agentclientprotocol/sdk";
 import {CodexAcpClient} from '../CodexAcpClient';
 import {CodexAppServerClient, type CodexConnectionEvent} from '../CodexAppServerClient';
-import {startCodexConnection} from "../CodexJsonRpcConnection";
-import {CodexAcpServer, type SessionState} from "../CodexAcpServer";
-import type {AcpClientConnection} from "../ACPSessionConnection";
+import {type CodexConnection, startCodexConnection} from "../CodexJsonRpcConnection";
+import {CodexAcpServer, type CodexProcessState, type SessionState} from "../CodexAcpServer";
+import {ACPSessionConnection, type AcpClientConnection} from "../ACPSessionConnection";
 import type {ServerNotification} from "../app-server";
 import type {MessageConnection} from "vscode-jsonrpc/node";
 import path from "node:path";
@@ -14,6 +14,10 @@ import {AgentMode} from "../AgentMode";
 import {DEFAULT_COLLABORATION_MODE} from "../CollaborationModeConfig";
 import {expect, vi} from "vitest";
 import type {Model, ReasoningEffortOption} from "../app-server/v2";
+import {CodexSubagentEventRouter} from "../subagents/CodexSubagentEventRouter";
+import {CodexBackgroundTerminalTasks} from "../async-tasks/CodexBackgroundTerminalTasks";
+import {CodexSessionCompactions} from "../CodexSessionCompactions";
+import {AUTH_STATUS_UPDATE_METHOD} from "../AuthStatusMeta";
 
 export type MethodCallEvent = { method: string; args: any[] };
 
@@ -69,6 +73,7 @@ export interface TestFixture {
     getAcpConnectionEvents(ignoredFields: string[]): MethodCallEvent[],
     getAcpConnectionDump(ignoredFields: string[]): string,
     clearAcpConnectionDump(): void,
+    getAcpConnection(): AcpClientConnection,
 }
 
 export interface CodexConnectionDumpOptions {
@@ -85,6 +90,7 @@ export interface ConnectionConfig {
     connection: MessageConnection;
     getExitCode: () => number | null;
     acpConnection?: AcpConnectionConfig;
+    codexProcessState?: CodexProcessState;
 }
 
 export function createBaseTestFixture(config: ConnectionConfig): TestFixture {
@@ -98,7 +104,14 @@ export function createBaseTestFixture(config: ConnectionConfig): TestFixture {
 
     const codexAppServerClient = new CodexAppServerClient(config.connection);
     const codexAcpClient = new CodexAcpClient(codexAppServerClient);
-    const codexAcpAgent = new CodexAcpServer(acpConnection, codexAcpClient, undefined, config.getExitCode);
+    const codexAcpAgent = new CodexAcpServer(
+        acpConnection,
+        codexAcpClient,
+        undefined,
+        config.getExitCode,
+        undefined,
+        config.codexProcessState,
+    );
 
     const transportEvents: CodexConnectionEvent[] = [];
     const codexEventHandlers: ((event: CodexConnectionEvent) => void)[] = [];
@@ -161,6 +174,9 @@ export function createBaseTestFixture(config: ConnectionConfig): TestFixture {
         },
         clearAcpConnectionDump() {
             acpConnectionEvents.splice(0, acpConnectionEvents.length);
+        },
+        getAcpConnection(): AcpClientConnection {
+            return acpConnection;
         }
     };
 }
@@ -244,7 +260,7 @@ export function removeDirectoryWithRetry(directory: string): void {
 export interface CodexMockTestFixture extends TestFixture {
     sendServerNotification(notification: ServerNotification | Record<string, unknown>): void,
     sendServerRequest<T>(method: string, params: unknown): Promise<T>,
-    setPermissionResponse(response: RequestPermissionResponse): void,
+    setPermissionResponse(response: RequestPermissionResponse | Promise<RequestPermissionResponse>): void,
     setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void,
 }
 
@@ -255,12 +271,15 @@ export interface CodexMockTestFixture extends TestFixture {
  * Provides `sendServerRequest()` to simulate server-initiated requests (e.g., approval requests).
  * Provides `setPermissionResponse()` to control ACP permission dialog responses.
  */
-export function createCodexMockTestFixture(): CodexMockTestFixture {
+export function createCodexMockTestFixture(
+    restartCodexClient?: () => Promise<CodexAcpClient>,
+    process?: CodexConnection["process"],
+): CodexMockTestFixture {
     let unhandledNotificationHandler: ((notification: any) => void) | null = null;
     const requestHandlers = new Map<string, (params: unknown) => Promise<unknown>>();
 
     // State for controlling permission responses
-    const permissionState: { response: RequestPermissionResponse } = {
+    const permissionState: { response: RequestPermissionResponse | Promise<RequestPermissionResponse> } = {
         response: { outcome: { outcome: 'cancelled' } }
     };
     const elicitationState: { response: CreateElicitationResponse | Promise<CreateElicitationResponse> } = {
@@ -303,12 +322,23 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
     const baseFixture = createBaseTestFixture({
         connection: mockCodexConnection,
         getExitCode: () => null,
+        ...(process ? {codexProcessState: {
+            connection: {connection: mockCodexConnection, process},
+            codexPath: undefined,
+            config: undefined,
+            modelProvider: undefined,
+            stderr: "",
+        }} : {}),
         acpConnection: {
             connection: acpConnection,
             events: acpConnectionEvents,
             eventHandlers: acpEventHandlers,
         }
     });
+    if (restartCodexClient) {
+        vi.spyOn(baseFixture.getCodexAcpAgent() as any, "restartCodexClient")
+            .mockImplementation(restartCodexClient);
+    }
 
     return {
         ...baseFixture,
@@ -324,7 +354,7 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
             }
             return await handler(params) as T;
         },
-        setPermissionResponse(response: RequestPermissionResponse): void {
+        setPermissionResponse(response: RequestPermissionResponse | Promise<RequestPermissionResponse>): void {
             permissionState.response = response;
         },
         setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void {
@@ -367,6 +397,7 @@ function anonymizeValue(value: any, path: string[], fieldsToAnonymize: Set<strin
  * Override specific fields as needed.
  */
 export function createTestSessionState(overrides?: Partial<SessionState>): SessionState {
+    const sessionId = overrides?.sessionId ?? "session-id";
     return {
         currentTurnId: null,
         lastTokenUsage: null,
@@ -378,7 +409,7 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         authProvider: null,
         cwd: "/test/cwd",
         additionalDirectories: [],
-        sessionId: "session-id",
+        sessionId,
         currentModelId: "model-id[effort]",
         availableModels: [],
         supportedReasoningEfforts: [],
@@ -388,9 +419,22 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         fastModeEnabled: false,
         currentModelSupportsFast: false,
         terminalOutputMode: "terminal_output_delta",
+        terminalOutputDeltaSupported: false,
         goalRevision: 0,
         sessionTitle: null,
         sessionTitleSource: "unknown",
+        compactions: new CodexSessionCompactions(),
+        subagents: new CodexSubagentEventRouter(
+            sessionId,
+            false,
+            new ACPSessionConnection({notify: vi.fn(), request: vi.fn()} as AcpClientConnection, sessionId),
+        ),
+        asyncTasks: new CodexBackgroundTerminalTasks(
+            false,
+            sessionId,
+            {} as CodexAppServerClient,
+            new ACPSessionConnection({notify: vi.fn(), request: vi.fn()} as AcpClientConnection, sessionId),
+        ),
         ...overrides,
     };
 }
@@ -404,6 +448,9 @@ export function createTestModel(overrides?: Partial<Model>): Model {
         upgrade: null,
         upgradeInfo: null,
         availabilityNux: null,
+        modelSpecialty: null,
+        multiAgentVersion: null,
+        availableAccessPrograms: null,
         displayName: id,
         description: `${id} model`,
         hidden: false,
@@ -417,6 +464,19 @@ export function createTestModel(overrides?: Partial<Model>): Model {
         isDefault: true,
         ...overrides,
     };
+}
+
+/**
+ * Waits for the connection's first `_auth/status_update`. `initialize` starts
+ * the identity read that produces it and never waits for the read, so a test
+ * that must not race it waits here instead.
+ */
+export async function awaitFirstAuthStatusPush(fixture: TestFixture): Promise<void> {
+    await vi.waitFor(() => {
+        const pushed = fixture.getAcpConnectionEvents([]).some(event =>
+            event.method === "notify" && event.args[0] === AUTH_STATUS_UPDATE_METHOD);
+        expect(pushed).toBe(true);
+    });
 }
 
 export function setupPromptTestSession(sessionOverrides?: Partial<SessionState>) {

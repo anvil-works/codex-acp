@@ -1,4 +1,16 @@
 {
+  "method": "notify",
+  "args": [
+    "_auth/status_update",
+    {
+      "authStatus": {
+        "kind": "none",
+        "label": "Not logged in"
+      }
+    }
+  ]
+}
+{
   "method": "sessionUpdate",
   "args": [
     {
@@ -75,6 +87,13 @@
             }
           },
           {
+            "name": "rename",
+            "description": "Rename the current session.",
+            "input": {
+              "hint": "new name"
+            }
+          },
+          {
             "name": "logout",
             "description": "Sign out of Codex. This option is available when you are logged in via ChatGPT.",
             "input": null
@@ -92,15 +111,15 @@
       "update": {
         "sessionUpdate": "session_info_update",
         "_meta": {
-          "codex": {
-            "goal": {
-              "objective": "Keep the restored migration green",
-              "status": "paused",
-              "tokenBudget": null,
-              "timeUsedSeconds": 46,
-              "createdAt": 1710000000,
-              "controlMethod": "_codex/session/goal_control"
-            }
+          "goal": {
+            "objective": "Keep the restored migration green",
+            "status": "paused",
+            "tokenBudget": null,
+            "tokensUsed": 42,
+            "timeUsedSeconds": 46,
+            "createdAt": 1710000000000,
+            "updatedAt": 1710000046000,
+            "controlMethod": "_session/goal"
           }
         }
       }
@@ -146,6 +165,22 @@
         "content": {
           "type": "text",
           "text": "[@image](https://example.com/image.png)"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "session-1",
+      "update": {
+        "sessionUpdate": "user_message_chunk",
+        "messageId": "item-user-1",
+        "content": {
+          "type": "text",
+          "text": "image:file-saved-image"
         }
       }
     }
@@ -260,7 +295,17 @@
             "newText": "Hello\nWorld\n",
             "path": "/test/project/Added.txt",
             "_meta": {
-              "kind": "add"
+              "kind": "add",
+              "jetbrains": {
+                "air": {
+                  "version": 1,
+                  "diffStats": {
+                    "version": 1,
+                    "added": 2,
+                    "removed": 0
+                  }
+                }
+              }
             }
           }
         ]
@@ -306,7 +351,8 @@
           "arguments": {
             "includeDisabled": false
           }
-        }
+        },
+        "name": "list_apps"
       }
     }
   ]
@@ -320,6 +366,7 @@
         "sessionUpdate": "tool_call",
         "toolCallId": "item-image-view-1",
         "kind": "read",
+        "name": "view_image",
         "title": "View Image /test/project/input.png",
         "status": "completed",
         "content": [
@@ -391,11 +438,13 @@
       "update": {
         "sessionUpdate": "tool_call",
         "toolCallId": "item-context-compaction-1",
-        "kind": "other",
-        "title": "Context compacted",
+        "kind": "think",
+        "title": "Compact conversation",
         "status": "completed",
         "_meta": {
-          "contextCompaction": true
+          "contextCompaction": {
+            "version": 1
+          }
         }
       }
     }
