@@ -675,7 +675,7 @@ export class CodexEventHandler {
                 ));
             case "account/rateLimits/updated":
                 this.handleRateLimitsUpdated(notification.params);
-                return null;
+                return this.createUsageUpdateFromState();
             case "account/updated":
                 this.onAccountUpdated?.(notification.params);
                 return null;
@@ -1342,7 +1342,38 @@ export class CodexEventHandler {
             sessionUpdate: "usage_update",
             used,
             size,
+            // The rate limits belong to the account, so only the usage of this session carries them.
+            ...(params.threadId === this.sessionState.sessionId ? this.createRateLimitsMeta() : {}),
         };
+    }
+
+    /** The usage of this session as last reported, for a rate limit change that comes without a usage report. */
+    private createUsageUpdateFromState(): UpdateSessionEvent | null {
+        const used = this.sessionState.lastTokenUsage?.totalTokens;
+        const size = this.sessionState.modelContextWindow;
+        if (used == null || size == null || size <= 0) {
+            return null;
+        }
+
+        return {
+            sessionUpdate: "usage_update",
+            used,
+            size,
+            ...this.createRateLimitsMeta(),
+        };
+    }
+
+    private createRateLimitsMeta(): {_meta?: Record<string, unknown>} {
+        return this.sessionState.rateLimits
+            ? {
+                  _meta: {
+                      "_codex/rateLimits": Array.from(this.sessionState.rateLimits.values(), (entry) => ({
+                          ...entry.snapshot,
+                          limitId: entry.limitId,
+                      })),
+                  },
+              }
+            : {};
     }
 
     private handleRateLimitsUpdated(params: AccountRateLimitsUpdatedNotification): void {
