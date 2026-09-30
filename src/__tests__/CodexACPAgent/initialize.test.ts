@@ -52,18 +52,46 @@ describe('CodexACPAgent - initialize', () => {
                     list: {},
                     close: {},
                     delete: {},
+                    fork: {},
                     additionalDirectories: {},
+                    subagents: {},
                 },
                 mcpCapabilities: {
                     acp: false,
                     http: true,
                     sse: false,
                 },
+                _meta: {
+                    authStatus: {},
+                },
             },
             authMethods: getCodexAuthMethods(),
             _meta: {
                 steering: {
                     supported: true,
+                },
+            },
+        });
+    });
+
+    it('should advertise the AIR extension only to AIR', async () => {
+        const result = await agent.initialize({
+            protocolVersion: acp.PROTOCOL_VERSION,
+            clientCapabilities: {_meta: {jetbrains: {air: {version: 1, capabilities: []}}}},
+        });
+        expect(result._meta).toEqual({
+            steering: {
+                supported: true,
+            },
+            jetbrains: {
+                air: {
+                    version: 1,
+                    goal: {
+                        version: 1,
+                        controlMethod: "_session/goal",
+                        actions: ["set", "pause", "resume", "clear"],
+                    },
+                    capabilities: ["sessionFailure", "diffPatch", "agentFileChangeReport", "nativeSubagentSessions", "asyncTasks", "recommendedValue", "rawInputRendering", "planContentDelta"],
                 },
             },
         });
@@ -122,6 +150,16 @@ describe('CodexACPAgent - initialize', () => {
             expect.objectContaining({id: "codex-api-key"}),
             expect.objectContaining({id: "openai-api-key"}),
         ]));
+    });
+
+    it('should advertise ChatGPT device code auth only when the client supports URL elicitation', () => {
+        const withUrlElicitation = getCodexAuthMethods({elicitation: {url: {}}})
+            .map((method) => method.id);
+        expect(withUrlElicitation).toContain("chat-gpt-device-code");
+
+        const withoutUrlElicitation = getCodexAuthMethods({elicitation: {form: {}}})
+            .map((method) => method.id);
+        expect(withoutUrlElicitation).not.toContain("chat-gpt-device-code");
     });
 
     it('should not advertise ChatGPT auth when browser auth is disabled', () => {

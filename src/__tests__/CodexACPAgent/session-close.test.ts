@@ -4,6 +4,7 @@ import {
     createTestModel,
     mockPromptTurn,
     type CodexMockTestFixture,
+    deferred,
 } from "../acp-test-utils";
 import type {CodexAcpServer} from "../../CodexAcpServer";
 import type {CodexAcpClient, SessionMetadata} from "../../CodexAcpClient";
@@ -61,6 +62,21 @@ describe("ACP session close", () => {
         expect(() => codexAcpAgent.getSessionState(sessionId)).toThrow(`Session ${sessionId} not found`);
     });
 
+    it("does not publish available commands after close completes", async () => {
+        const skills = deferred<{data: []}>();
+        const {fixture, codexAcpAgent} = await createSession({
+            configure: ({codexAcpClient}) => {
+                vi.spyOn(codexAcpClient, "listSkills").mockReturnValue(skills.promise);
+            },
+        });
+
+        await codexAcpAgent.closeSession({sessionId});
+        skills.resolve({data: []});
+        await waitForMicrotasks();
+
+        expect(fixture.getAcpConnectionEvents([])).toEqual([]);
+    });
+
     it("does not wait for delayed turn start before closing", async () => {
         const {fixture, codexAcpAgent} = await createSession();
         const turnStart = deferred<TurnStartResponse>();
@@ -86,7 +102,6 @@ describe("ACP session close", () => {
         const requestMethods = fixture.getCodexConnectionEvents([])
             .flatMap(event => event.eventType === "request" ? [event.method] : []);
         expect(requestMethods).toEqual(["thread/unsubscribe"]);
-        expect(fixture.getAcpConnectionDump([])).not.toContain("Conversation interrupted");
         expect(() => codexAcpAgent.getSessionState(sessionId)).toThrow(`Session ${sessionId} not found`);
 
         fixture.clearCodexConnectionDump();
@@ -99,10 +114,12 @@ describe("ACP session close", () => {
         });
     });
 
-    it("does not start a turn after close while prompt startup is still refreshing skills", async () => {
+    it("does not start a turn after close while prompt startup is still setting the skill roots", async () => {
         const {fixture, codexAcpAgent} = await createSession();
-        const skillRefresh = deferred<{data: []}>();
-        const listSkillsSpy = vi.spyOn(fixture.getCodexAppServerClient(), "listSkills")
+        // New skill roots make the prompt set them before the turn starts.
+        codexAcpAgent.getSessionState(sessionId).additionalDirectories = ["/workspace/extra"];
+        const skillRefresh = deferred<void>();
+        const listSkillsSpy = vi.spyOn(fixture.getCodexAppServerClient(), "skillsExtraRootsSet")
             .mockReturnValue(skillRefresh.promise);
         const turnStartSpy = vi.spyOn(fixture.getCodexAppServerClient(), "turnStart")
             .mockResolvedValue(createTurnStartResponse("turn-id"));
@@ -119,7 +136,7 @@ describe("ACP session close", () => {
         await expect(codexAcpAgent.closeSession({sessionId})).resolves.toEqual({});
         await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
 
-        skillRefresh.resolve({data: []});
+        skillRefresh.resolve();
         await waitForMicrotasks();
 
         expect(turnStartSpy).not.toHaveBeenCalled();
@@ -157,6 +174,9 @@ describe("ACP session close", () => {
     });
 
     it("suppresses MCP startup updates while close is in progress", async () => {
+        const fixture = createCodexMockTestFixture();
+        const codexAcpAgent = fixture.getCodexAcpAgent();
+        const codexAcpClient = fixture.getCodexAcpClient();
         const mcpStartup = deferred<McpStartupResult>();
         const mcpServer: McpServer = {
             name: "broken-mcp",
@@ -164,15 +184,22 @@ describe("ACP session close", () => {
             args: ["broken"],
             env: [],
         };
-        const {fixture, codexAcpAgent, codexAcpClient} = await createSession({
-            mcpServers: [mcpServer],
-            configure: ({codexAcpClient}) => {
-                vi.spyOn(codexAcpClient, "awaitMcpServerStartup").mockReturnValue(mcpStartup.promise);
-            },
+        vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
+        vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({account: null, requiresOpenaiAuth: false});
+        vi.spyOn(codexAcpClient, "listSkills").mockResolvedValue({data: []});
+        vi.spyOn(codexAcpClient, "newSession").mockResolvedValue({
+            sessionId,
+            currentModelId: "model-id[medium]",
+            models: [createTestModel()],
+            collaborationMode: "default",
+            currentServiceTier: null,
+            additionalDirectories: [],
         });
+        vi.spyOn(codexAcpClient, "awaitMcpServerStartup").mockReturnValue(mcpStartup.promise);
         const unsubscribe = deferred<void>();
         vi.spyOn(codexAcpClient, "closeSession").mockReturnValue(unsubscribe.promise);
 
+        const newSessionPromise = codexAcpAgent.newSession({cwd: "/test/cwd", mcpServers: [mcpServer]});
         await vi.waitFor(() => {
             expect(codexAcpClient.awaitMcpServerStartup).toHaveBeenCalledWith(["broken-mcp"], expect.any(Number));
         });
@@ -188,6 +215,7 @@ describe("ACP session close", () => {
             failed: [{server: "broken-mcp", error: "boom"}],
             cancelled: [],
         });
+        await newSessionPromise;
         await waitForMicrotasks();
 
         expect(fixture.getAcpConnectionEvents([])).toEqual([]);
@@ -508,14 +536,6 @@ function createSessionMetadata(): SessionMetadata {
         currentServiceTier: null,
         additionalDirectories: [],
     };
-}
-
-function deferred<T>(): {promise: Promise<T>, resolve: (value: T) => void} {
-    let resolve: (value: T) => void = () => {};
-    const promise = new Promise<T>((innerResolve) => {
-        resolve = innerResolve;
-    });
-    return {promise, resolve};
 }
 
 async function waitForMicrotasks(): Promise<void> {

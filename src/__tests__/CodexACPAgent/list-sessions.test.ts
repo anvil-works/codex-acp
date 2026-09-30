@@ -17,10 +17,13 @@ describe("CodexACPAgent - list sessions", () => {
             sessionId: "sess-1",
             parentThreadId: null,
             threadSource: null,
+            originator: null,
             forkedFromId: null,
             preview: "First session",
             ephemeral: false,
             modelProvider: "openai",
+            model: null,
+            reasoningEffort: null,
             createdAt: 100,
             updatedAt: 200,
             recencyAt: null,
@@ -28,6 +31,10 @@ describe("CodexACPAgent - list sessions", () => {
             path: null,
             cwd: "/repo/project",
             cliVersion: "0.0.0",
+            section: null,
+            sectionEnteredAt: null,
+            projectId: null,
+            historyMode: "legacy",
             source: "cli",
             agentNickname: null,
             agentRole: null,
@@ -40,10 +47,13 @@ describe("CodexACPAgent - list sessions", () => {
             sessionId: "sess-2",
             parentThreadId: null,
             threadSource: null,
+            originator: null,
             forkedFromId: null,
             preview: "Other session",
             ephemeral: false,
             modelProvider: "openai",
+            model: null,
+            reasoningEffort: null,
             createdAt: 300,
             updatedAt: 400,
             recencyAt: null,
@@ -51,6 +61,10 @@ describe("CodexACPAgent - list sessions", () => {
             path: null,
             cwd: "/repo/other",
             cliVersion: "0.0.0",
+            section: null,
+            sectionEnteredAt: null,
+            projectId: null,
+            historyMode: "legacy",
             source: "cli",
             agentNickname: null,
             agentRole: null,
@@ -83,10 +97,96 @@ describe("CodexACPAgent - list sessions", () => {
                 "appServer",
                 "unknown",
             ],
+            // Codex answers from the state DB instead of scanning every rollout file.
+            useStateDbOnly: true,
         }));
         await expect(JSON.stringify(response, null, 2)).toMatchFileSnapshot(
             "data/list-sessions.json"
         );
+    });
+
+    it("sends one thread/list request for an empty page", async () => {
+        const fixture = createCodexMockTestFixture();
+        const codexAppServerClient = fixture.getCodexAppServerClient();
+        fixture.getCodexAcpClient().authRequired = vi.fn().mockResolvedValue(false);
+        codexAppServerClient.threadList = vi.fn().mockResolvedValue({data: [], nextCursor: null});
+        codexAppServerClient.threadLoadedList = vi.fn().mockResolvedValue({data: [], nextCursor: null});
+
+        const response = await fixture.getCodexAcpAgent().listSessions({cwd: "/repo/project", cursor: null});
+
+        expect(response.sessions).toEqual([]);
+        expect(codexAppServerClient.threadList).toHaveBeenCalledTimes(1);
+    });
+
+    it("normalizes Windows cwd filters before comparing absolute paths", async () => {
+        const fixture = createCodexMockTestFixture();
+        const codexAcpAgent = fixture.getCodexAcpAgent();
+        const codexAcpClient = fixture.getCodexAcpClient();
+        const codexAppServerClient = fixture.getCodexAppServerClient();
+
+        codexAcpClient.authRequired = vi.fn().mockResolvedValue(false);
+
+        const matchingThread: Thread = {
+            id: "sess-win",
+            sessionId: "sess-win",
+            parentThreadId: null,
+            threadSource: null,
+            originator: null,
+            forkedFromId: null,
+            preview: "Windows session",
+            ephemeral: false,
+            modelProvider: "openai",
+            model: null,
+            reasoningEffort: null,
+            createdAt: 100,
+            updatedAt: 200,
+            recencyAt: null,
+            status: { type: "idle" },
+            path: null,
+            cwd: "D:\\workspace\\sample-project\\",
+            cliVersion: "0.0.0",
+            section: null,
+            sectionEnteredAt: null,
+            projectId: null,
+            historyMode: "legacy",
+            source: "cli",
+            agentNickname: null,
+            agentRole: null,
+            gitInfo: null,
+            name: null,
+            turns: [],
+        };
+        const otherThread: Thread = {
+            ...matchingThread,
+            id: "sess-other",
+            sessionId: "sess-other",
+            preview: "Other session",
+            cwd: "D:\\workspace\\other-project",
+        };
+
+        codexAppServerClient.threadList = vi.fn().mockResolvedValue({
+            data: [matchingThread, otherThread],
+            nextCursor: null,
+        });
+
+        const response = await codexAcpAgent.listSessions({
+            cwd: "d:/workspace/sample-project",
+            cursor: null,
+        });
+
+        expect(response.sessions).toEqual([{
+            sessionId: "sess-win",
+            cwd: "D:\\workspace\\sample-project\\",
+            title: "Windows session",
+            updatedAt: "1970-01-01T00:03:20.000Z",
+        }]);
+
+        const basenameResponse = await codexAcpAgent.listSessions({
+            cwd: "sample-project",
+            cursor: null,
+        });
+
+        expect(basenameResponse.sessions.map(session => session.sessionId)).toEqual(["sess-win"]);
     });
 
     it("should prefer the explicit thread name as the session title", async () => {
@@ -102,10 +202,13 @@ describe("CodexACPAgent - list sessions", () => {
             sessionId: "sess-1",
             parentThreadId: null,
             threadSource: null,
+            originator: null,
             forkedFromId: null,
             preview: "Preview text",
             ephemeral: false,
             modelProvider: "openai",
+            model: null,
+            reasoningEffort: null,
             createdAt: 100,
             updatedAt: 200,
             recencyAt: null,
@@ -113,6 +216,10 @@ describe("CodexACPAgent - list sessions", () => {
             path: null,
             cwd: "/repo/project",
             cliVersion: "0.0.0",
+            section: null,
+            sectionEnteredAt: null,
+            projectId: null,
+            historyMode: "legacy",
             source: "cli",
             agentNickname: null,
             agentRole: null,
@@ -156,6 +263,9 @@ describe("CodexACPAgent - list sessions", () => {
                 upgrade: null,
                 upgradeInfo: null,
                 availabilityNux: null,
+                modelSpecialty: null,
+                multiAgentVersion: null,
+                availableAccessPrograms: null,
                 displayName: "gpt-5",
                 description: "test model",
                 hidden: false,
@@ -177,10 +287,13 @@ describe("CodexACPAgent - list sessions", () => {
             sessionId: "sess-1",
             parentThreadId: null,
             threadSource: null,
+            originator: null,
             forkedFromId: null,
             preview: "First session",
             ephemeral: false,
             modelProvider: "openai",
+            model: null,
+            reasoningEffort: null,
             createdAt: 100,
             updatedAt: 200,
             recencyAt: null,
@@ -188,6 +301,10 @@ describe("CodexACPAgent - list sessions", () => {
             path: null,
             cwd: "/repo/project",
             cliVersion: "0.0.0",
+            section: null,
+            sectionEnteredAt: null,
+            projectId: null,
+            historyMode: "legacy",
             source: "cli",
             agentNickname: null,
             agentRole: null,

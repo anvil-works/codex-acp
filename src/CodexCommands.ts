@@ -1,10 +1,11 @@
 import type * as acp from "@agentclientprotocol/sdk";
 import type {AvailableCommand} from "@agentclientprotocol/sdk";
 import {ACPSessionConnection, type AcpClientConnection} from "./ACPSessionConnection";
+import {AIR_COMMAND_ACTION_KEY, airOnlyMeta} from "./AirExtension";
 import type {CodexAcpClient} from "./CodexAcpClient";
 import type {RateLimitSnapshot, ReviewTarget, SkillsListEntry, SkillsListParams, TurnCompletedNotification} from "./app-server/v2";
 import type {SessionState} from "./CodexAcpServer";
-import type {RateLimitsMap} from "./RateLimitsMap";
+import {createRateLimitsMap, type RateLimitsMap} from "./RateLimitsMap";
 import type {TokenCount} from "./TokenCount";
 import {logger} from "./Logger";
 import {createAgentTextMessageChunk} from "./ContentChunks";
@@ -23,9 +24,19 @@ export type CommandHandleResult =
     | { handled: false }
     | { handled: true, turnCompleted?: TurnCompletedNotification };
 
+export type PromptKind =
+    | { kind: "prompt" }
+    | { kind: "localCommand", name: string }
+    | { kind: "codexTurnCommand", name: string };
+
 export type CommandHandleOptions = {
     onTurnStartPending?: () => void;
     onTurnStarted?: (turnId: string, threadId: string) => void;
+    /**
+     * Fired once Codex accepts a command that runs a turn but records no user message
+     * (`/compact`, `/goal`), so a v2 caller can insert its own live-only one right away.
+     */
+    onCommandAccepted?: () => void;
     setConfigOption?: (configId: string, value: string) => Promise<void>;
 };
 
@@ -36,6 +47,8 @@ export class CodexCommands {
     private readonly codexAcpClient: CodexAcpClient;
     private readonly runWithProcessCheck: <T>(operation: () => Promise<T>) => Promise<T>;
     private readonly onLogout: LogoutHandler;
+    /** The commands that each session got last, to skip a publish that changes nothing. */
+    private readonly published = new WeakMap<SessionState, string>();
 
     constructor(
         connection: AcpClientConnection,
@@ -49,13 +62,29 @@ export class CodexCommands {
         this.onLogout = onLogout;
     }
 
-    async publish(sessionState: SessionState): Promise<void> {
+    /** Sends the available commands. With `onlyChanges`, it sends nothing when the commands did not change. */
+    async publish(
+        sessionState: SessionState,
+        shouldPublish: () => boolean = () => true,
+        onlyChanges = false,
+    ): Promise<void> {
         try {
-            const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills(this.createSkillsListParams(sessionState)));
-            const availableCommands = this.buildAvailableCommands(skillsResponse?.data ?? []);
-            if (availableCommands.length === 0) {
+            if (!shouldPublish()) {
                 return;
             }
+            const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills(this.createSkillsListParams(sessionState)));
+            const availableCommands = this.buildAvailableCommands(
+                skillsResponse?.data ?? [],
+                sessionState.clientCapabilities.airClient,
+            );
+            if (availableCommands.length === 0 || !shouldPublish()) {
+                return;
+            }
+            const key = JSON.stringify(availableCommands);
+            if (onlyChanges && this.published.get(sessionState) === key) {
+                return;
+            }
+            this.published.set(sessionState, key);
 
             const session = new ACPSessionConnection(this.connection, sessionState.sessionId);
             await session.update({
@@ -63,7 +92,9 @@ export class CodexCommands {
                 availableCommands
             });
         } catch (err) {
-            logger.error(`Failed to publish available commands for session ${sessionState.sessionId}`, err);
+            if (shouldPublish()) {
+                logger.error(`Failed to publish available commands for session ${sessionState.sessionId}`, err);
+            }
         }
     }
 
@@ -73,10 +104,10 @@ export class CodexCommands {
         };
     }
 
-    private buildAvailableCommands(skillsEntries: SkillsListEntry[]): AvailableCommand[] {
+    private buildAvailableCommands(skillsEntries: SkillsListEntry[], airClient: boolean): AvailableCommand[] {
         const commands = new Map<string, AvailableCommand>();
 
-        for (const builtin of this.getBuiltinCommands()) {
+        for (const builtin of this.getBuiltinCommands(airClient)) {
             commands.set(builtin.name, builtin);
         }
 
@@ -97,22 +128,25 @@ export class CodexCommands {
 
     /**
      * See the original cli commands documentation here: https://developers.openai.com/codex/cli/slash-commands/
+     * Only AIR gets a command action, in `_meta.jetbrains.air.commandAction`.
      */
-    private getBuiltinCommands(): AvailableCommand[] {
+    private getBuiltinCommands(airClient: boolean): AvailableCommand[] {
+        const commandAction = (action: Record<string, unknown>) => {
+            const meta = airOnlyMeta(airClient, AIR_COMMAND_ACTION_KEY, action);
+            return meta ? {_meta: meta} : {};
+        };
         return [
             {
                 name: "plan",
                 description: "Turn plan mode on.",
                 input: null,
-                _meta: {
-                    commandAction: {
-                        kind: "setConfigOption",
-                        configId: COLLABORATION_MODE_CONFIG_ID,
-                        value: PLAN_COLLABORATION_MODE,
-                        resetValue: DEFAULT_COLLABORATION_MODE,
-                        presentation: "state",
-                    },
-                },
+                ...commandAction({
+                    kind: "setConfigOption",
+                    configId: COLLABORATION_MODE_CONFIG_ID,
+                    value: PLAN_COLLABORATION_MODE,
+                    resetValue: DEFAULT_COLLABORATION_MODE,
+                    presentation: "state",
+                }),
             },
             {
                 name: "mcp",
@@ -153,12 +187,15 @@ export class CodexCommands {
                 name: "goal",
                 description: "Set a goal to keep pursuing.",
                 input: { hint: "[<objective>|clear|pause|resume]" },
-                _meta: {
-                    commandAction: {
-                        kind: "prefixPrompt",
-                        presentation: "state",
-                    },
-                },
+                ...commandAction({
+                    kind: "prefixPrompt",
+                    presentation: "state",
+                }),
+            },
+            {
+                name: "rename",
+                description: "Rename the current session.",
+                input: { hint: "new name" }
             },
             {
                 name: "logout",
@@ -187,6 +224,42 @@ export class CodexCommands {
         };
     }
 
+    /**
+     * Tells ahead of time how `tryHandleCommand` will handle a prompt: as a regular prompt, as a
+     * command handled locally without a Codex turn, or as a command that runs a Codex turn.
+     * Keep in sync with `tryHandleCommand`.
+     */
+    classifyPrompt(prompt: acp.ContentBlock[]): PromptKind {
+        const command = this.parseCommand(prompt);
+        if (command === null || command.name.startsWith("$")) return {kind: "prompt"};
+        switch (command.name) {
+            case "plan":
+            case "status":
+            case "rename":
+            case "logout":
+            case "skills":
+            case "mcp":
+                return {kind: "localCommand", name: command.name};
+            case "compact":
+            case "review":
+                return {kind: "codexTurnCommand", name: command.name};
+            case "review-branch":
+            case "review-commit":
+                return command.rest.length === 0
+                    ? {kind: "localCommand", name: command.name}
+                    : {kind: "codexTurnCommand", name: command.name};
+            case "goal": {
+                const argument = command.rest.trim().toLowerCase();
+                if (argument.length === 0 || argument === "pause" || argument === "clear" || argument.length > 4000) {
+                    return {kind: "localCommand", name: command.name};
+                }
+                return {kind: "codexTurnCommand", name: command.name};
+            }
+            default:
+                return {kind: "prompt"};
+        }
+    }
+
     async tryHandleCommand(
         prompt: acp.ContentBlock[],
         sessionState: SessionState,
@@ -211,8 +284,13 @@ export class CodexCommands {
                 return { handled: options.setConfigOption !== undefined };
             }
             case "compact": {
-                await this.runWithProcessCheck(() => this.codexAcpClient.runCompact(sessionId));
-                return { handled: true };
+                options.onTurnStartPending?.();
+                const turnCompleted = await this.runWithProcessCheck(() => this.codexAcpClient.runCompact(
+                    sessionId,
+                    (turnId) => options.onTurnStarted?.(turnId, sessionId),
+                    options.onCommandAccepted,
+                ));
+                return { handled: true, ...(turnCompleted === undefined ? {} : {turnCompleted}) };
             }
             case "goal": {
                 return await this.runGoalCommand(sessionState, command.rest, options);
@@ -246,9 +324,18 @@ export class CodexCommands {
                 return { handled: true, turnCompleted };
             }
             case "status": {
+                await this.refreshRateLimits(sessionState);
                 const session = new ACPSessionConnection(this.connection, sessionId);
                 const message = this.buildStatusMessage(sessionState);
                 await session.update(createAgentTextMessageChunk(message));
+                return { handled: true };
+            }
+            case "rename": {
+                if (command.rest.length === 0) {
+                    await this.sendCommandUsageMessage(commandName, "new name", sessionId);
+                    return { handled: true };
+                }
+                await this.runWithProcessCheck(() => this.codexAcpClient.renameSession(sessionId, command.rest));
                 return { handled: true };
             }
             case "logout": {
@@ -308,6 +395,7 @@ export class CodexCommands {
             (turnId, threadId) => {
                 this.handleCommandTurnStarted(sessionState, options, turnId, threadId);
             },
+            options.onCommandAccepted,
         ));
     }
 
@@ -334,6 +422,8 @@ export class CodexCommands {
                     (turnId) => {
                         this.handleCommandTurnStarted(sessionState, options, turnId, sessionId);
                     },
+                    undefined,
+                    options.onCommandAccepted,
                 )));
             case "clear":
                 await this.runWithProcessCheck(() => this.codexAcpClient.clearGoal(sessionId));
@@ -353,6 +443,8 @@ export class CodexCommands {
             (turnId) => {
                 this.handleCommandTurnStarted(sessionState, options, turnId, sessionId);
             },
+            undefined,
+            options.onCommandAccepted,
         )));
     }
 
@@ -370,6 +462,9 @@ export class CodexCommands {
     }
 
     private createGoalCommandResult(turnCompleted: TurnCompletedNotification | null): CommandHandleResult {
+        // No matching turn observed within `runGoalSet`'s 1 s grace window. Codex auto-continues
+        // active goals itself; don't start a synthetic continuation turn here (that also skipped
+        // the goal-status check, so it fired even when the goal had stopped, e.g. budgetLimited).
         if (turnCompleted === null) {
             return { handled: true };
         }
@@ -419,6 +514,17 @@ export class CodexCommands {
         return lines.join("  \n");
     }
 
+    private async refreshRateLimits(sessionState: SessionState): Promise<void> {
+        try {
+            const response = await this.runWithProcessCheck(() => this.codexAcpClient.getRateLimits());
+            if (response) {
+                sessionState.rateLimits = createRateLimitsMap(response);
+            }
+        } catch (err) {
+            logger.error(`Failed to refresh rate limits for session ${sessionState.sessionId}`, err);
+        }
+    }
+
     private formatAccountInfo(account: SessionState["account"]): string {
         if (!account) {
             return "not logged in";
@@ -451,10 +557,10 @@ export class CodexCommands {
             return "data not available yet";
         }
         const used = usage.totalTokens;
-        const percentLeft = Math.round(((contextWindow - used) / contextWindow) * 100);
+        const percentUsed = Math.round((used / contextWindow) * 100);
         const usedFormatted = this.formatTokenCount(used);
         const totalFormatted = this.formatTokenCount(contextWindow);
-        return `${percentLeft}% left (${usedFormatted} used / ${totalFormatted})`;
+        return `${percentUsed}% used (${usedFormatted} used / ${totalFormatted})`;
     }
 
     private formatRateLimitLines(rateLimits: RateLimitsMap | null): string[] {
@@ -497,7 +603,33 @@ export class CodexCommands {
             }
         }
 
+        if (rateLimits.individualLimit) {
+            const limit = rateLimits.individualLimit;
+            const used = this.formatCreditAmount(limit.used);
+            const total = this.formatCreditAmount(limit.limit);
+            if (used !== null && total !== null) {
+                const percentLeft = Math.round(Math.min(100, Math.max(0, limit.remainingPercent)));
+                const resetDate = new Date(limit.resetsAt * 1000)
+                    .toLocaleDateString("en-US", {month: "short", day: "numeric"});
+                lines.push(
+                    `**${prefix}individual spend limit:** ${percentLeft}% left (${used} of ${total} credits used; resets ${resetDate})`,
+                );
+            }
+        }
+
         return lines;
+    }
+
+    private formatCreditAmount(raw: string): string | null {
+        const trimmed = raw.trim();
+        if (trimmed.length === 0) {
+            return null;
+        }
+        const value = Number(trimmed);
+        if (!Number.isFinite(value) || value < 0) {
+            return null;
+        }
+        return Math.round(value).toLocaleString("en-US");
     }
 
     private formatWindowLabel(windowDurationMins: number | null): string {
