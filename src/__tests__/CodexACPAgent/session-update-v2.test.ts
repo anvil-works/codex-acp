@@ -81,7 +81,16 @@ describe('ACPSessionConnection - session/update over ACP v2', () => {
         const session = new ACPSessionConnection(view, "session-1");
 
         expect(session.protocolVersion).toBe(2);
-        await session.update(usageUpdate);
+        await session.update({
+            ...usageUpdate,
+            _meta: {
+                "_codex/rateLimits": [{
+                    limitId: "standard-limit",
+                    limitName: "Standard",
+                    primary: {usedPercent: 30, resetsAt: 1_800_000_000, windowDurationMins: 300},
+                }],
+            },
+        });
         // Code that still calls `notify` on the connection directly takes the same v2 path.
         await view.notify(acp.methods.client.session.update, {sessionId: "session-1", update: sessionInfoUpdate});
 
