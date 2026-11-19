@@ -8,6 +8,19 @@
         "amount": 0.25,
         "currency": "USD"
       },
+      "_meta": {
+        "_codex/rateLimits": [
+          {
+            "limitId": "standard-limit",
+            "limitName": "Standard",
+            "primary": {
+              "usedPercent": 30,
+              "resetsAt": 1800000000,
+              "windowDurationMins": 300
+            }
+          }
+        ]
+      },
       "sessionUpdate": "usage_update"
     }
   },
